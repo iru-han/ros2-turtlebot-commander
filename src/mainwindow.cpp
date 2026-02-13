@@ -1,0 +1,156 @@
+#include "my_turtle_gui/mainwindow.hpp"
+// ★ 빌드 시 .ui 파일이 아래 이름의 헤더 파일로 자동 변환됩니다!
+#include "ui_main_window.h"
+
+MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow), node_(node)
+{
+    ui->setupUi(this); // 디자인 덮어씌우기
+
+    // 1. Topic Pub
+    pub_cmd_ = node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+
+    // 2. Topic Sub (odom-location)
+    sub_odom_ = node_->create_subscription<nav_msgs::msg::Odometry>(
+        "/odom", 10, std::bind(&MainWindow::odom_callback, this, std::placeholders::_1)
+    );
+
+    // 3. Topic Sub (scan-obstacle)
+    auto qos = rclcpp::SensorDataQoS();
+    sub_scan_ = node_->create_subscription<sensor_msgs::msg::LaserScan>(
+        "/scan", qos, std::bind(&MainWindow::scan_callback, this, std::placeholders::_1)
+    );
+
+    // 4. Action Client (patrol)
+    action_client_ = rclcpp_action::create_client<Patrol>(node_, "turtlebot3");
+
+
+    // 1. 버튼 클릭 이벤트 연결
+    connect(ui->btn_go, &QPushButton::clicked, this, &MainWindow::on_btn_go_clicked);
+    connect(ui->btn_back, &QPushButton::clicked, this, &MainWindow::on_btn_back_clicked);
+    connect(ui->btn_left, &QPushButton::clicked, this, &MainWindow::on_btn_left_clicked);
+    connect(ui->btn_right, &QPushButton::clicked, this, &MainWindow::on_btn_right_clicked);
+    connect(ui->btn_stop, &QPushButton::clicked, this, &MainWindow::on_btn_stop_clicked);
+
+    // 2. ★ [Action] 순찰 버튼 연결
+    if (ui->btn_patrol_square) connect(ui->btn_patrol_square, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_square_clicked);
+    if (ui->btn_patrol_triangle) connect(ui->btn_patrol_triangle, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_triangle_clicked);
+
+    // 2. 화면 안전 업데이트 신호 연결
+    connect(this, &MainWindow::updateUiSignal, this, &MainWindow::updateUiSlot);
+
+}
+
+MainWindow::~MainWindow() {
+    delete ui;
+}
+
+void MainWindow::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    double x = msg->pose.pose.position.x;
+    double y = msg->pose.pose.position.y;
+
+    auto q = msg->pose.pose.orientation;
+
+    double qx = q.x;
+    double qy = q.y;
+    double qz = q.z;
+    double qw = q.w;
+
+    double siny_cosp = 2.0 * (qw * qz + qx * qy);
+    double cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
+
+    double theta = std::atan2(siny_cosp, cosy_cosp) * 180.0 / M_PI;
+
+    // emit updateUiSignal(x, y, false, "");
+
+    QString pose_log = QString("X: %1, Y: %2, Theta: %3").arg(x).arg(y).arg(theta);
+    emit updateUiSignal(x, y, false, pose_log);
+}
+
+// ★ 5. 장애물 감지 함수 (파이썬 DetectObstacle 기능)
+void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+    // 전방 60도 범위 (앞쪽 30도 + 뒤쪽 30도? 보통 인덱스로 처리)
+    // 파이썬 코드: front_ranges = msg.ranges[0:30] + msg.ranges[-30:]
+    float min_dist = 100.0;
+    for(float r: msg->ranges) {
+        if (r > 0.01 && r < min_dist) min_dist = r;
+    }
+
+    if (min_dist < 0.5) {
+        emit updateUiSignal(0, 0, true, "Obstacle!!");
+        auto stop_msg = geometry_msgs::msg::Twist();
+        pub_cmd_->publish(stop_msg);
+    } else {
+        emit updateUiSignal(0, 0, false, "");
+    }
+}
+
+// UI 업데이트 함수들
+void MainWindow::updateUiSlot(double x, double y, bool warning, QString log) {
+    if (warning) {
+        updateWarningUI(true);
+        if (!log.isEmpty()) ui->listWidget->addItem(log);
+    } else {
+        if (ui->label_pos_x) ui->label_pos_x->setText(QString::number(x, 'f', 2));
+        if (ui->label_pos_y) ui->label_pos_y->setText(QString::number(y, 'f', 2));
+        updateWarningUI(false);
+    }
+}
+
+void MainWindow::updateWarningUI(bool is_danger) {
+    if (is_danger) {
+        ui->label_warning->setText("충돌 위험!");
+        ui->label_warning->setStyleSheet("QLabel { color : red; font-weight: bold; }");
+    } else {
+        ui->label_warning->setText("안전");
+        ui->label_warning->setStyleSheet("QLabel { color : green; }");
+    }
+}
+
+// 버튼 클릭 동작 정의
+void MainWindow::on_btn_go_clicked() {
+    auto msg = geometry_msgs::msg::Twist();
+    msg.linear.x = 0.2;
+    pub_cmd_->publish(msg);
+}
+void MainWindow::on_btn_back_clicked() {
+    auto msg = geometry_msgs::msg::Twist();
+    msg.linear.x = -0.2;
+    pub_cmd_->publish(msg);
+}
+void MainWindow::on_btn_left_clicked() {
+    auto msg = geometry_msgs::msg::Twist();
+    msg.angular.z = 0.5;
+    pub_cmd_->publish(msg);
+}
+void MainWindow::on_btn_right_clicked() {
+    auto msg = geometry_msgs::msg::Twist();
+    msg.angular.z = -0.5;
+    pub_cmd_->publish(msg);
+}
+void MainWindow::on_btn_stop_clicked() {
+    auto msg = geometry_msgs::msg::Twist();
+    pub_cmd_->publish(msg);
+}
+
+void MainWindow::on_btn_patrol_square_clicked() {
+    auto goal_msg = Patrol::Goal();
+    goal_msg.goal.x = 1.0;
+    goal_msg.goal.y = 1.0;
+    goal_msg.goal.z = 1.0;
+
+    auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
+    action_client_->async_send_goal(goal_msg, opts);
+    ui->listWidget->addItem("Square Patrol sended!");
+}
+
+void MainWindow::on_btn_patrol_triangle_clicked() {
+    auto goal_msg = Patrol::Goal();
+    goal_msg.goal.x = 2.0;
+    goal_msg.goal.y = 1.0;
+    goal_msg.goal.z = 1.0;
+
+    auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
+    action_client_->async_send_goal(goal_msg, opts);
+    ui->listWidget->addItem("Triangle Patrol sended!");
+}
