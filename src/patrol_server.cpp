@@ -69,18 +69,31 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
   double start_y = current_odom_.pose.pose.position.y;
   double traveled_dist = 0.0;
 
-  rclcpp::Rate loop_rate(20); // 20Hz
+  rclcpp::Rate loop_rate(50); // 50Hz 정밀 체크
 
-  while (traveled_dist < target_distance) {
+  while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) return false;
+
     traveled_dist = calculate_distance(start_x, start_y,
     current_odom_.pose.pose.position.x,
     current_odom_.pose.pose.position.y);
 
-    twist.linear.x = 0.15; // forward speed
+    double remaining = target_distance - traveled_dist;
+
+    // ★ 목표 도달 체크 (오차 1cm 이내)
+    if (remaining < 0.01) {
+      break;
+    }
+
+    // ★ P제어 원리 적용: 가까워지면 천천히
+    double speed = remaining * 0.5;
+    if (speed < 0.05) speed = 0.05; // 너무 느리면 안 가니까 최소 속도
+    if (speed > 0.2) speed = 0.2; // 너무 빠르면 미끄러지니까 최대 속도 제한
+
+    twist.linear.x = speed;
     cmd_vel_pub_->publish(twist);
 
-    feedback->state = "Moving: " + std::to_string(traveled_dist) + "m";
+    feedback->state = "Go.. Left: " +std::to_string(remaining) + "m";
     goal_handle->publish_feedback(feedback);
 
     loop_rate.sleep();
@@ -88,6 +101,10 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
 
   twist.linear.x = 0.0;
   cmd_vel_pub_->publish(twist);
+
+  // 미끄러짐 안정화 대기
+  rclcpp::sleep_for(std::chrono::milliseconds(500));
+
   return true;
 }
 
@@ -97,31 +114,51 @@ bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHan
 
   double target_rad = target_angle_deg * M_PI / 180.0;
   double start_yaw = get_yaw(current_odom_);
-  double rotated_yaw = 0.0;
 
-  rclcpp::Rate loop_rate(20);
+  // 주기를 20Hz -> 50Hz로 높여서 더 자주, 더 정밀하게 체크합니다.
+  rclcpp::Rate loop_rate(50);
 
-  while (std::abs(rotated_yaw) < std::abs(target_rad)) {
+  while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) return false;
 
     double current_yaw = get_yaw(current_odom_);
-    rotated_yaw = current_yaw - start_yaw;
+    double error_yaw = current_yaw - start_yaw;
 
-    // 각도 보정 (-PI ~ PI 범위 처리)
-    if (rotated_yaw > M_PI) rotated_yaw -= 2.0 * M_PI;
-    else if (rotated_yaw < -M_PI) rotated_yaw += 2.0 * M_PI;
+    // 각도 보정 (-PI ~ PI)
+    if (error_yaw > M_PI) error_yaw -= 2.0 * M_PI;
+    else if (error_yaw < -M_PI) error_yaw += 2.0 * M_PI;
 
-    twist.angular.z = (target_angle_deg > 0) ? 0.3 : -0.3; // 회전 방향 설정
+    // 남은 각도 계산 (절댓값)
+    double remaining = std::abs(target_rad) - std::abs(error_yaw);
+
+    // ★ 목표에 도달했는지 체크 (오차 범위 0.02 라디안 약 1.1도)
+    if (remaining < 0.02) {
+      break;
+    }
+
+    // ★ P제어 원리 적용: 남은 각도가 작을수록 천천히 돕니다.
+    // 기본 0.5배속, 하지만 최소 0.1 rad/s는 유지해야 로봇이 움직입니다.
+    double speed = remaining * 0.5;
+    if (speed < 0.15) speed = 0.15; // 최소 속도 보장 (안 그러면 멈춰버림)
+    if (speed > 0.5) speed = 0.5; // 최대 속도 제한
+
+    // 방향 결정
+    twist.angular.z = (target_angle_deg > 0) ? speed : -speed;
     cmd_vel_pub_->publish(twist);
 
-    feedback->state = "rotating.. " + std::to_string(rotated_yaw * 180.0 / M_PI) + "degree";
+    feedback->state = "Rotating.. Left: " + std::to_string(remaining * 180/M_PI) + " deg";
     goal_handle->publish_feedback(feedback);
 
     loop_rate.sleep();
   }
 
+  // 완전 정지
   twist.angular.z = 0.0;
   cmd_vel_pub_->publish(twist);
+
+  // 관성 때문에 조금 더 미끄러지는 시간을 기다려줍니다. (안정화)
+  rclcpp::sleep_for(std::chrono::milliseconds(500));
+
   return true;
 }
 
