@@ -15,7 +15,7 @@ PatrolServer::PatrolServer(): Node("turtlebot3_patrol_server") {
     "/odom", 10, std::bind(&PatrolServer::odom_callback, this, _1)
   );
 
-  RCLCPP_INFO(this->get_logger(), "Patrol Server Start!");
+  RCLCPP_INFO(this->get_logger(), "PID Patrol Server Start!");
 }
 
 // 1. 클라이언트가 목표를 보냈을 때 (Accept/Reject 결정)
@@ -44,14 +44,20 @@ void PatrolServer::handle_accepted(
   std::thread{std::bind(&PatrolServer::execute, this, _1), goal_handle}.detach();
 }
 
-// ★ 쿼터니언 -> Yaw (radian) 변환 수식
+// ==========================================================
+// 1. 쿼터니언(4개 숫자)을 오일러 각도(Yaw)로 변환
+// ==========================================================
 double PatrolServer::get_yaw(const nav_msgs::msg::Odometry & odom) {
+  // 쿼터니언 구조체 가져오기
   auto q = odom.pose.pose.orientation;
 
   RCLCPP_INFO(this->get_logger(), "Quat: w=%.2f, x=%.2f, y=%.2f, z=%.2f", q.w, q.x, q.y, q.z);
 
+  // 공식: yaw = atan2(2(wz + xy), 1 - 2(y^2 + z^2))
   double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
   double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+
+  // atan2는 -PI ~ +PI (-180도 ~ +180도) 사이의 값을 반환합니다.r
   return std::atan2(siny_cosp, cosy_cosp);
 }
 
@@ -67,33 +73,38 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
 
   double start_x = current_odom_.pose.pose.position.x;
   double start_y = current_odom_.pose.pose.position.y;
-  double traveled_dist = 0.0;
 
   rclcpp::Rate loop_rate(50); // 50Hz 정밀 체크
 
   while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) return false;
 
-    traveled_dist = calculate_distance(start_x, start_y,
-    current_odom_.pose.pose.position.x,
-    current_odom_.pose.pose.position.y);
+    // double dx = current_odom_.pose.pose.position.x - start_x;
+    // double dy = current_odom_.pose.pose.position.y - start_y;
+    // double traveled_dist = std::sqrt(dx*dx + dy*dy);
 
-    double remaining = target_distance - traveled_dist;
+    // 거리 계산 (피타고라스: a^2 + b^2 = c^2)
+    double traveled_dist = calculate_distance(start_x,
+      start_y,
+      current_odom_.pose.pose.position.x,
+      current_odom_.pose.pose.position.y);
 
-    // ★ 목표 도달 체크 (오차 1cm 이내)
-    if (remaining < 0.01) {
-      break;
-    }
+    // 오차 계산
+    double error = target_distance - traveled_dist;
 
-    // ★ P제어 원리 적용: 가까워지면 천천히
-    double speed = remaining * 0.5;
-    if (speed < 0.05) speed = 0.05; // 너무 느리면 안 가니까 최소 속도
-    if (speed > 0.2) speed = 0.2; // 너무 빠르면 미끄러지니까 최대 속도 제한
+    // P 제어: 거리가 많이 남으면 빠름, 적게 남으면 느림
+    double speed = error * 1.0; // Kp = 1.0
+
+    // 속도 제한 (너무 느리면 안 가니까 최소 0.05 보장, 최대 0.2 제한)
+    if (speed > 0.2) speed = 0.2;
+    if (speed < 0.05) speed = 0.05;
+
+    if (error < 0.01) break; // 1cm 이내 도착 시 종료
 
     twist.linear.x = speed;
     cmd_vel_pub_->publish(twist);
 
-    feedback->state = "Go.. Left: " +std::to_string(remaining) + "m";
+    feedback->state = "Dist Error: " + std::to_string(error);
     goal_handle->publish_feedback(feedback);
 
     loop_rate.sleep();
@@ -112,41 +123,76 @@ bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHan
   auto feedback = std::make_shared<Patrol::Feedback>();
   auto twist = geometry_msgs::msg::Twist();
 
+  // 목표 각도를 라디안으로 변환 (deg * 3.14 / 180)
   double target_rad = target_angle_deg * M_PI / 180.0;
+
+  // 현재 각도 저장 (시작점)
   double start_yaw = get_yaw(current_odom_);
 
-  // 주기를 20Hz -> 50Hz로 높여서 더 자주, 더 정밀하게 체크합니다.
+  // PID 제어 변수 설정
+  double Kp = 1.5; // P게인: 클수록 빨리 돔
+  double Ki = 0.01; // I게인: 작을수록 미세 오차를 천천히 잡음 (너무 크면 흔들림)
+  double Kd = 1.0; // D게인: 클수록 브레이크를 세게 밟음 (오버슈트 방지)
+
+  double prev_error = 0.0; // 직전 오차 (D제어용)
+  double integral_error = 0.0; // 누적 오차 (I제어용)
+
+  // 50Hz (0.02초마다 제어)
   rclcpp::Rate loop_rate(50);
+  double dt = 0.02;
 
   while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) return false;
 
+    // 1. 현재 각도 계산
     double current_yaw = get_yaw(current_odom_);
-    double error_yaw = current_yaw - start_yaw;
 
-    // 각도 보정 (-PI ~ PI)
-    if (error_yaw > M_PI) error_yaw -= 2.0 * M_PI;
-    else if (error_yaw < -M_PI) error_yaw += 2.0 * M_PI;
+    // 2. 현재 회전한 양 계산 (현재 - 시작)
+    double rotated_amount = current_yaw - start_yaw;
 
-    // 남은 각도 계산 (절댓값)
-    double remaining = std::abs(target_rad) - std::abs(error_yaw);
+    // 각도 보정 (-PI ~ PI 넘어가면 반대편으로 계산되는 문제 해결)
+    if (rotated_amount > M_PI) rotated_amount -= 2.0 * M_PI;
+    else if (rotated_amount < -M_PI) rotated_amount += 2.0 * M_PI;
 
-    // ★ 목표에 도달했는지 체크 (오차 범위 0.02 라디안 약 1.1도)
-    if (remaining < 0.02) {
+    // 3. 오차(Error) 계산: 목표값 - 현재값
+    double error = target_rad - rotated_amount;
+
+    // ★ PID 수식 적용 ★
+
+    // P항: 오차에 비례 (멀면 빨리, 가까우면 느리게)
+    double P_term = Kp * error;
+
+    // I항: 오차 누적 (미세하게 안 닿을 때 밀어주기)
+    integral_error += error * dt;
+    double I_term = Ki * integral_error;
+
+    // D항: 오차의 변화율 (기울기, 급격히 가까워지면 브레이크)
+    double derivative = (error - prev_error) / dt;
+    double D_term = Kd * derivative;
+
+    // 최종 출력 (속도) = P + I + D
+    double angular_velocity = P_term + I_term + D_term;
+
+    // 다음 턴을 위해 현재 오차 저장
+    prev_error = error;
+
+    // 4. 안전장치: 너무 빠르면 위험하니까 최대 속도 제한 (Clamp)
+    // std::clamp(값, 최소, 최대)
+    double max_speed = 1.0;
+    angular_velocity = std::clamp(angular_velocity, -max_speed, max_speed);
+
+    // 5. 종료 조건: 오차가 매우 작으면(0.01 rad ≈ 0.5도) 멈춤
+    if (std::abs(error) < 0.01) {
       break;
     }
 
-    // ★ P제어 원리 적용: 남은 각도가 작을수록 천천히 돕니다.
-    // 기본 0.5배속, 하지만 최소 0.1 rad/s는 유지해야 로봇이 움직입니다.
-    double speed = remaining * 0.5;
-    if (speed < 0.15) speed = 0.15; // 최소 속도 보장 (안 그러면 멈춰버림)
-    if (speed > 0.5) speed = 0.5; // 최대 속도 제한
-
-    // 방향 결정
-    twist.angular.z = (target_angle_deg > 0) ? speed : -speed;
+    // 명령 전송
+    twist.linear.x = 0.0;
+    twist.angular.z = angular_velocity;
     cmd_vel_pub_->publish(twist);
 
-    feedback->state = "Rotating.. Left: " + std::to_string(remaining * 180/M_PI) + " deg";
+    // 피드백 전송
+    feedback->state = "PID Error: " + std::to_string(error);
     goal_handle->publish_feedback(feedback);
 
     loop_rate.sleep();

@@ -30,7 +30,6 @@ private:
   // ★ 수학 함수 (쿼터니언 -> 오일러)
   double get_yaw(const nav_msgs::msg::Odometry & odom);
 
-
   double calculate_distance(double x1, double y1, double x2, double y2);
 
   // ★ 이동 함수 (PID 적용, 파이썬의 go_front, turn 이식)
