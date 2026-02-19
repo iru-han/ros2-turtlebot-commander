@@ -5,6 +5,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "turtlebot3_msgs/action/patrol.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include <cmath>
@@ -46,6 +47,8 @@ private:
     std::shared_ptr<std_srvs::srv::SetBool::Response> response
   );
 
+  void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+
   // 변수들
   rclcpp_action::Server<Patrol>::SharedPtr action_server_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
@@ -53,6 +56,10 @@ private:
 
   nav_msgs::msg::Odometry current_odom_;
   bool is_odom_received_ = false;
+
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_;
+  float min_dist_ = 100.0; // 가장 가까운 장애물 거리
 };
 
 #endif

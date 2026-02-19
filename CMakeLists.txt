@@ -35,7 +35,7 @@ add_executable(my_gui_node
   src/mainwindow.cpp
   src/patrol_server.cpp
   include/my_turtle_gui/mainwindow.hpp
-  include/my_turtle_gui/move_turtle.hpp
+  include/my_turtle_gui/patrol_server.hpp
   ${UI_FILES}
 )
 
@@ -47,6 +47,7 @@ ament_target_dependencies(my_gui_node
   geometry_msgs
   sensor_msgs
   nav_msgs
+  sensor_msgs
   turtlebot3_msgs
   std_srvs
 )

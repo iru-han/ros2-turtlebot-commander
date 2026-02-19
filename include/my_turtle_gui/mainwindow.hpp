@@ -38,7 +38,7 @@ private slots:
     void on_btn_stop_clicked();
     void on_btn_patrol_square_clicked();
     void on_btn_patrol_triangle_clicked();
-    void on_btn_safety_clicked();
+    void on_btn_safety_toggle_clicked();
 
     void updateUiSlot(double x, double y, bool warning, QString log);
 
@@ -55,10 +55,15 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_scan_;
 
+    // 클라이언트를 멤버 변수로 선언하여 생명 주기 관리
+    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr safety_client_;
+
     // 현재 로봇 상태 저장 변수
     double current_x_ = 0.0;
     double current_y_ = 0.0;
     double current_linear_vel_ = 0.0;
+
+    bool is_safety_on_ = true;
 
     // action client
     using Patrol = turtlebot3_msgs::action::Patrol;

@@ -3,6 +3,11 @@
 using namespace std::placeholders;
 
 PatrolServer::PatrolServer(): Node("turtlebot3_patrol_server") {
+  // 서비스 전용 콜백 그룹 생성 (데드락 방지)
+  cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+
+  auto srv_options = rcl_interfaces::msg::ParameterDescriptor(); // 임시
+
   action_server_ = rclcpp_action::create_server<Patrol>(
     this, "turtlebot3",
     std::bind(&PatrolServer::handle_goal, this, _1, _2),
@@ -10,9 +15,12 @@ PatrolServer::PatrolServer(): Node("turtlebot3_patrol_server") {
     std::bind(&PatrolServer::handle_accepted, this, _1)
   );
 
+  // 서비스 등록 시 콜백 그룹 지정
   safety_service_ = this->create_service<std_srvs::srv::SetBool>(
     "toggle_safety",
-    std::bind(&PatrolServer::handle_safety_toggle, this, std::placeholders::_1, std::placeholders::_2)
+    std::bind(&PatrolServer::handle_safety_toggle, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default,
+    cb_group_
   );
 
   cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -20,19 +28,42 @@ PatrolServer::PatrolServer(): Node("turtlebot3_patrol_server") {
     "/odom", 10, std::bind(&PatrolServer::odom_callback, this, _1)
   );
 
+  scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+        "/scan", rclcpp::SensorDataQoS(), std::bind(&PatrolServer::scan_callback, this, _1)
+  );
+
   RCLCPP_INFO(this->get_logger(), "PID Patrol Server Start!");
+}
+
+// 스캔 콜백 구현
+void PatrolServer::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+    float min_val = 100.0;
+    // 전방 30도 및 후방(인덱스 끝) 30도 체크
+    for (size_t i = 0; i < 30; ++i) {
+        if (msg->ranges[i] > 0.01 && msg->ranges[i] < min_val) min_val = msg->ranges[i];
+    }
+    for (size_t i = msg->ranges.size() - 30; i < msg->ranges.size(); ++i) {
+        if (msg->ranges[i] > 0.01 && msg->ranges[i] < min_val) min_val = msg->ranges[i];
+    }
+    min_dist_ = min_val;
 }
 
 void PatrolServer::handle_safety_toggle(
   const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
   std::shared_ptr<std_srvs::srv::SetBool::Response> response
 ) {
-  is_safety_mode_ = request->data;
+  // 경고 해결: 이 변수를 의도적으로 사용하지 않음을 컴파일러에게 알림
+  (void)request;
+
+  // is_safety_mode_ = request->data;
+  // 클라이언트가 보낸 request->data를 무시하고 서버 내부 상태를 토글합니다.
+  // (이게 가장 확실한 토글 방식입니다)
+  is_safety_mode_ = !is_safety_mode_;
 
   response->success = true;
   response->message = is_safety_mode_ ? "Safety Mode ON" : "Safety Mode OFF";
 
-  RCLCPP_INFO(this->get_logger(), "Service Request: %s", response->message.c_str());
+  RCLCPP_INFO(this->get_logger(), "Status Changed: %s", response->message.c_str());
 }
 
 // 1. 클라이언트가 목표를 보냈을 때 (Accept/Reject 결정)
@@ -95,6 +126,14 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
 
   while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) return false;
+
+    // ★ 안전 모드 체크: 장애물이 0.3m 이내면 이동 중단 및 에러 처리
+        if (is_safety_mode_ && min_dist_ < 0.3) {
+            RCLCPP_WARN(this->get_logger(), "Obstacle Detected! Stopping Patrol.");
+            auto stop_twist = geometry_msgs::msg::Twist();
+            cmd_vel_pub_->publish(stop_twist);
+            return false; // 장애물 때문에 실패로 리턴
+    }
 
     // double dx = current_odom_.pose.pose.position.x - start_x;
     // double dy = current_odom_.pose.pose.position.y - start_y;
@@ -226,28 +265,47 @@ bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHan
 }
 
 void PatrolServer::execute(const std::shared_ptr<GoalHandlePatrol> goal_handle) {
-  const auto goal = goal_handle->get_goal();
-  auto result = std::make_shared<Patrol::Result>();
+    const auto goal = goal_handle->get_goal();
+    auto result = std::make_shared<Patrol::Result>();
 
-  // 1=사각형(90도씩 4번), 2=삼각형(120도씩 3번)
-  int sides = (goal->goal.x == 2.0) ? 3 : 4; // 2=삼각형, 그외 사각형
-  double angle = (goal->goal.x == 2.0) ? 120.0 : 90.0;
-  double dist = goal->goal.y;
+    int sides = (goal->goal.x == 2.0) ? 3 : 4;
+    double angle = (goal->goal.x == 2.0) ? 120.0 : 90.0;
+    double dist = goal->goal.y;
 
-  RCLCPP_INFO(this->get_logger(), "Patrol Start! Mode: %f", goal->goal.x);
-
-  for (int i = 0; i < sides; ++i) {
-    // straight and rotate
-    if (!move_straight(dist, goal_handle) || !rotate(angle, goal_handle)) {
-      result->result = false;
-      goal_handle->canceled(result);
-      return;
+    for (int i = 0; i < sides; ++i) {
+        // move_straight가 false를 반환(장애물 감지 등)하면
+        if (!move_straight(dist, goal_handle)) {
+            if (goal_handle->is_canceling()) {
+                result->result = false;
+                goal_handle->canceled(result); // 사용자가 취소한 경우
+                RCLCPP_INFO(this->get_logger(), "Patrol Canceled");
+            } else {
+                result->result = false;
+                goal_handle->abort(result);    // 장애물 등으로 서버가 중단한 경우 ★ (중요!)
+                RCLCPP_WARN(this->get_logger(), "Patrol Aborted due to obstacle");
+            }
+            return; // 함수 종료
+        }
+        
+        if (!rotate(angle, goal_handle)) {
+            if (goal_handle->is_canceling()) {
+                result->result = false;
+                goal_handle->canceled(result); // 사용자가 취소한 경우
+                RCLCPP_INFO(this->get_logger(), "Patrol Canceled");
+            } else {
+                result->result = false;
+                goal_handle->abort(result);    // 장애물 등으로 서버가 중단한 경우 ★ (중요!)
+                RCLCPP_WARN(this->get_logger(), "Patrol Aborted due to obstacle");
+            }
+            return;
+        }
     }
-  }
 
-  result->result = true;
-  goal_handle->succeed(result);
-  RCLCPP_INFO(this->get_logger(), "Patrol successfully completed!");
+    if (rclcpp::ok()) {
+        result->result = true;
+        goal_handle->succeed(result);
+        RCLCPP_INFO(this->get_logger(), "Patrol Success!");
+    }
 }
 
 void PatrolServer::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
