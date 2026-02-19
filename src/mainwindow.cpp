@@ -27,21 +27,14 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget *parent)
     // 5. Action Client (patrol)
     action_client_ = rclcpp_action::create_client<Patrol>(node_, "turtlebot3");
 
-
-    // 6. 버튼 클릭 이벤트 연결
-    connect(ui->btn_go, &QPushButton::clicked, this, &MainWindow::on_btn_go_clicked);
-    connect(ui->btn_back, &QPushButton::clicked, this, &MainWindow::on_btn_back_clicked);
-    connect(ui->btn_left, &QPushButton::clicked, this, &MainWindow::on_btn_left_clicked);
-    connect(ui->btn_right, &QPushButton::clicked, this, &MainWindow::on_btn_right_clicked);
-    connect(ui->btn_stop, &QPushButton::clicked, this, &MainWindow::on_btn_stop_clicked);
-
-    // 7. ★ [Action] 순찰 버튼 연결
-    if (ui->btn_patrol_square) connect(ui->btn_patrol_square, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_square_clicked);
-    if (ui->btn_patrol_triangle) connect(ui->btn_patrol_triangle, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_triangle_clicked);
+    // 생성자 내부
+    safety_client_ = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
 
     // 8. 화면 안전 업데이트 신호 연결
     connect(this, &MainWindow::updateUiSignal, this, &MainWindow::updateUiSlot);
 
+    // ★ 서비스 클라이언트 초기화
+    safety_client_ = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
 }
 
 MainWindow::~MainWindow() {
@@ -64,6 +57,8 @@ void MainWindow::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
 
 // ★ 5. 장애물 감지 함수 (파이썬 DetectObstacle 기능)
 void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+    if (!is_safety_on_) return; // ★ 안전 모드 꺼져있으면 검사 안 함
+
     // 전방 60도 범위 (앞쪽 30도 + 뒤쪽 30도? 보통 인덱스로 처리)
     // 파이썬 코드: front_ranges = msg.ranges[0:30] + msg.ranges[-30:]
     float min_dist = 100.0;
@@ -111,35 +106,32 @@ void MainWindow::updateWarningUI(bool is_danger) {
 }
 
 // 버튼 클릭 이벤트 함수 (예: ui->btn_safety)
-void MainWindow::on_btn_safety_clicked() {
-    using ServiceResponseFuture = rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture;
-
-    // 1. 서비스 클라이언트 생성
-    auto client = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
-
-    // 2. 서버 연결 대기
-    if (!client->wait_for_service(std::chrono::seconds(1))) {
-        ui->listWidget->addItem("Service not available");
+void MainWindow::on_btn_safety_toggle_clicked() {
+    if (!safety_client_->wait_for_service(std::chrono::seconds(1))) {
+        ui->listWidget->addItem("Service Server not found!");
         return;
     }
 
-    // 3. 요청 데이터 설정 (현재 상태의 반대로 요청)
     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
-    static bool current_state = true;
-    current_state = !current_state;
-    request->data = current_state;
+    request->data = true; // 서버에서 토글하므로 값은 상관없음
 
-    // 4. 비동기 요청 및 콜백 처리 (두 번째 코드의 lambda 방식)
-    using ServiceResponseFuture = rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture;
-    auto response_received_callback = [this](ServiceResponseFuture future) {
-        auto response = future.get();
-        if (response->success) {
-            // UI에 서비스 결과 표시
-            emit updateUiSignal(0, 0, false, QString::fromStdString(response->message));
-        }
-    };
-
-    client->async_send_request(request, response_received_callback);
+    // 비동기 요청
+    safety_client_->async_send_request(request, 
+        [this](rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture future) {
+            try {
+                auto response = future.get();
+                if (response->success) {
+                    // 서버 응답 메시지에 따라 GUI의 안전 모드 변수도 업데이트
+                    this->is_safety_on_ = response->message.find("ON") != std::string::npos;
+                    
+                    // UI 업데이트는 반드시 Signal을 통해서!
+                    QString msg = QString::fromStdString(response->message);
+                    emit updateUiSignal(0, 0, false, "GUI Safety: " + msg);
+                }
+            } catch (const std::exception & e) {
+                emit updateUiSignal(0, 0, false, "Service Failed!");
+            }
+        });
 }
 
 // 버튼 클릭 동작 정의
@@ -175,6 +167,29 @@ void MainWindow::on_btn_patrol_square_clicked() {
     goal_msg.goal.z = 1.0;
 
     auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
+
+    // ★ 결과 콜백 추가
+    opts.result_callback = [this](const rclcpp_action::ClientGoalHandle<Patrol>::WrappedResult & result) {
+        QString final_msg;
+        switch (result.code) {
+            case rclcpp_action::ResultCode::SUCCEEDED:
+                final_msg = "Patrol Success!";
+                break;
+            case rclcpp_action::ResultCode::ABORTED:
+                final_msg = "Patrol Aborted (Obstacle?)";
+                break;
+            case rclcpp_action::ResultCode::CANCELED:
+                final_msg = "Patrol Canceled";
+                break;
+            default:
+                final_msg = "Unknown Result";
+                break;
+        }
+        // UI에 결과 출력
+        emit updateUiSignal(0, 0, false, final_msg);
+    };
+
+
     action_client_->async_send_goal(goal_msg, opts);
     ui->listWidget->addItem("Square Patrol sended!");
 }
@@ -186,6 +201,28 @@ void MainWindow::on_btn_patrol_triangle_clicked() {
     goal_msg.goal.z = 1.0;
 
     auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
+
+    // ★ 결과 콜백 추가
+    opts.result_callback = [this](const rclcpp_action::ClientGoalHandle<Patrol>::WrappedResult & result) {
+        QString final_msg;
+        switch (result.code) {
+            case rclcpp_action::ResultCode::SUCCEEDED:
+                final_msg = "Patrol Success!";
+                break;
+            case rclcpp_action::ResultCode::ABORTED:
+                final_msg = "Patrol Aborted (Obstacle?)";
+                break;
+            case rclcpp_action::ResultCode::CANCELED:
+                final_msg = "Patrol Canceled";
+                break;
+            default:
+                final_msg = "Unknown Result";
+                break;
+        }
+        // UI에 결과 출력
+        emit updateUiSignal(0, 0, false, final_msg);
+    };
+
     action_client_->async_send_goal(goal_msg, opts);
     ui->listWidget->addItem("Triangle Patrol sended!");
 }
