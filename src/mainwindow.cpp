@@ -72,11 +72,19 @@ void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     // 전방 60도 범위 (앞쪽 30도 + 뒤쪽 30도? 보통 인덱스로 처리)
     // 파이썬 코드: front_ranges = msg.ranges[0:30] + msg.ranges[-30:]
     float min_dist = 100.0;
-    for(float r: msg->ranges) {
+    int scan_size = msg->ranges.size();
+
+    for (int i=0; i<30; ++i) {
+        float r = msg->ranges[i];
         if (r > 0.01 && r < min_dist) min_dist = r;
     }
 
-    if (min_dist < 0.5) {
+    for (int i=scan_size-30; i<scan_size; ++i) {
+        float r = msg->ranges[i];
+        if (r > 0.01 && r < min_dist) min_dist = r;
+    }
+
+    if (min_dist < 0.3) {
         emit updateUiSignal(0, 0, true, "Obstacle!!");
         auto stop_msg = geometry_msgs::msg::Twist();
         pub_cmd_->publish(stop_msg);

@@ -55,7 +55,7 @@ public:
     // GUI로 글자를 보내주기 위한 콜백 함수 (파이썬의 addItem 역할 대체)
     std::function<void(QString)> log_callback;
     std::function<void(double, double, double)> pose_callback; // x, y, theta
-    std::function<void(bool)> warning_callbak;
+    std::function<void(bool)> warning_callback;
 
     // ==========================================
     // [Action] 순찰 명령 보내기 함수
@@ -74,7 +74,7 @@ public:
         auto send_goal_options = rclcpp_action::Client<Patrol>::SendGoalOptions();
 
         // 피드백(중간보고) 받으면 실행할 함수 연결
-        send_gaol_options.feedback_callback = [this](
+        send_goal_options.feedback_callback = [this](
             GoalHandlePatrol::SharedPtr,
             const std::shared_ptr<const Patrol::Feedback> feedback) {
                 if(log_callback) log_callback(QString("순찰 중: %1").arg(feedback->state.c_str()));
@@ -96,7 +96,7 @@ private:
         auto msg = geometry_msgs::msg::Twist();
         msg.linear.x = velocity;
         msg.angular.z = angular;
-        pub_->publish(msg);
+        pub_cmd_->publish(msg);
 
         // GUI에 로그를 찍기 위해 콜백 실행
         if (log_callback) {
@@ -157,7 +157,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_scan_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Service<std__srvs::srv::SetBool>::SharedPtr src_safety_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr srv_safety_;
     rclcpp_action::Client<Patrol>::SharedPtr action_client_;
 };
 
