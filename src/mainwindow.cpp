@@ -7,36 +7,39 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget *parent)
 {
     ui->setupUi(this); // 디자인 덮어씌우기
 
-    // 1. Topic Pub
-    pub_cmd_ = node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+    // 1. QoS 설정 (두 번째 예제의 Reliable 설정 적용)
+    auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 
-    // 2. Topic Sub (odom-location)
+    // 2. Topic Pub
+    pub_cmd_ = node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", qos_profile);
+
+    // 3. Topic Sub (odom-location)
     sub_odom_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10, std::bind(&MainWindow::odom_callback, this, std::placeholders::_1)
+        "/odom", qos_profile, std::bind(&MainWindow::odom_callback, this, std::placeholders::_1)
     );
 
-    // 3. Topic Sub (scan-obstacle)
+    // 4. Topic Sub (scan-obstacle)
     auto qos = rclcpp::SensorDataQoS();
     sub_scan_ = node_->create_subscription<sensor_msgs::msg::LaserScan>(
         "/scan", qos, std::bind(&MainWindow::scan_callback, this, std::placeholders::_1)
     );
 
-    // 4. Action Client (patrol)
+    // 5. Action Client (patrol)
     action_client_ = rclcpp_action::create_client<Patrol>(node_, "turtlebot3");
 
 
-    // 1. 버튼 클릭 이벤트 연결
+    // 6. 버튼 클릭 이벤트 연결
     connect(ui->btn_go, &QPushButton::clicked, this, &MainWindow::on_btn_go_clicked);
     connect(ui->btn_back, &QPushButton::clicked, this, &MainWindow::on_btn_back_clicked);
     connect(ui->btn_left, &QPushButton::clicked, this, &MainWindow::on_btn_left_clicked);
     connect(ui->btn_right, &QPushButton::clicked, this, &MainWindow::on_btn_right_clicked);
     connect(ui->btn_stop, &QPushButton::clicked, this, &MainWindow::on_btn_stop_clicked);
 
-    // 2. ★ [Action] 순찰 버튼 연결
+    // 7. ★ [Action] 순찰 버튼 연결
     if (ui->btn_patrol_square) connect(ui->btn_patrol_square, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_square_clicked);
     if (ui->btn_patrol_triangle) connect(ui->btn_patrol_triangle, &QPushButton::clicked, this, &MainWindow::on_btn_patrol_triangle_clicked);
 
-    // 2. 화면 안전 업데이트 신호 연결
+    // 8. 화면 안전 업데이트 신호 연결
     connect(this, &MainWindow::updateUiSignal, this, &MainWindow::updateUiSlot);
 
 }
@@ -46,25 +49,17 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-    double x = msg->pose.pose.position.x;
-    double y = msg->pose.pose.position.y;
+    current_x_ = msg->pose.pose.position.x;
+    current_y_ = msg->pose.pose.position.y;
+    current_linear_vel_ = msg->twist.twist.linear.x;
 
-    auto q = msg->pose.pose.orientation;
+    // GUI 스레드와 안전하게 통신하기 위해 시그널 발생
+    QString status_log = QString("X: %1, Y: %2, Vel: %3")
+    .arg(current_x_, 0, 'f', 2)
+    .arg(current_y_, 0, 'f', 2)
+    .arg(current_linear_vel_, 0, 'f', 2);
 
-    double qx = q.x;
-    double qy = q.y;
-    double qz = q.z;
-    double qw = q.w;
-
-    double siny_cosp = 2.0 * (qw * qz + qx * qy);
-    double cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
-
-    double theta = std::atan2(siny_cosp, cosy_cosp) * 180.0 / M_PI;
-
-    // emit updateUiSignal(x, y, false, "");
-
-    QString pose_log = QString("X: %1, Y: %2, Theta: %3").arg(x).arg(y).arg(theta);
-    emit updateUiSignal(x, y, false, pose_log);
+    emit updateUiSignal(current_x_, current_y_, false, status_log);
 }
 
 // ★ 5. 장애물 감지 함수 (파이썬 DetectObstacle 기능)

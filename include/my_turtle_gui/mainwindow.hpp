@@ -46,10 +46,17 @@ private:
     Ui::MainWindow *ui;
     rclcpp::Node::SharedPtr node_;
 
-    // Publisher & Subscriber
+    // Publisher: 로봇에게 명령 전달
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_;
+
+    // Subscription: 로봇의 상태(오돔, 스캔) 수신
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_scan_;
+
+    // 현재 로봇 상태 저장 변수
+    double current_x_ = 0.0;
+    double current_y_ = 0.0;
+    double current_linear_vel_ = 0.0;
 
     // action client
     using Patrol = turtlebot3_msgs::action::Patrol;
