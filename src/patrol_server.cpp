@@ -10,12 +10,29 @@ PatrolServer::PatrolServer(): Node("turtlebot3_patrol_server") {
     std::bind(&PatrolServer::handle_accepted, this, _1)
   );
 
+  safety_service_ = this->create_service<std_srvs::srv::SetBool>(
+    "toggle_safety",
+    std::bind(&PatrolServer::handle_safety_toggle, this, std::placeholders::_1, std::placeholders::_2)
+  );
+
   cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
   odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
     "/odom", 10, std::bind(&PatrolServer::odom_callback, this, _1)
   );
 
   RCLCPP_INFO(this->get_logger(), "PID Patrol Server Start!");
+}
+
+void PatrolServer::handle_safety_toggle(
+  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+  std::shared_ptr<std_srvs::srv::SetBool::Response> response
+) {
+  is_safety_mode_ = request->data;
+
+  response->success = true;
+  response->message = is_safety_mode_ ? "Safety Mode ON" : "Safety Mode OFF";
+
+  RCLCPP_INFO(this->get_logger(), "Service Request: %s", response->message.c_str());
 }
 
 // 1. 클라이언트가 목표를 보냈을 때 (Accept/Reject 결정)

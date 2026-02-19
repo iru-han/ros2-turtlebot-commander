@@ -110,6 +110,36 @@ void MainWindow::updateWarningUI(bool is_danger) {
     }
 }
 
+// 버튼 클릭 이벤트 함수 (예: ui->btn_safety)
+void MainWindow::on_btn_safety_clicked() {
+    // 1. 서비스 클라이언트 생성
+    auto client = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
+
+    // 2. 서버 연결 대기
+    if (!client->wait_for_service(std::chrono::seconds(1))) {
+        ui->listWidget->addItem("Service not available");
+        return;
+    }
+
+    // 3. 요청 데이터 설정 (현재 상태의 반대로 요청)
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    static bool current_state = true;
+    current_state = !current_state;
+    request->data = current_state;
+
+    // 4. 비동기 요청 및 콜백 처리 (두 번째 코드의 lambda 방식)
+    using ServiceResponseFuture = rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture;
+    auto response_received_callback = [this](ServiceResponseFuture future) {
+        auto response = future.get();
+        if (response->success) {
+            // UI에 서비스 결과 표시
+            emit updateUiSignal(0, 0, false, QString::fromStdString(response->message));
+        }
+    };
+
+    client->async_send_request(request, response_received_callback);
+}
+
 // 버튼 클릭 동작 정의
 void MainWindow::on_btn_go_clicked() {
     auto msg = geometry_msgs::msg::Twist();
