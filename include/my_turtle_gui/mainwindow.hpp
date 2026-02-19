@@ -27,9 +27,9 @@ public:
     ~MainWindow();
 
 signals:
-    void updateUiSignal(double x, double y, bool warning, QString log);
+    void update_ui_signal(double x, double y, bool warning, QString log);
 
-private slots:
+private slots:update_ui_signal
     // 버튼 클릭 슬롯들
     void on_btn_go_clicked();
     void on_btn_back_clicked();
@@ -40,9 +40,9 @@ private slots:
     void on_btn_patrol_triangle_clicked();
     void on_btn_safety_toggle_clicked();
 
-    void updateUiSlot(double x, double y, bool warning, QString log);
+    void update_ui_slot(double x, double y, bool warning, QString log);
 
-    void updateWarningUI(bool is_danger);
+    void update_warning_ui(bool is_danger);
 
 private:
     Ui::MainWindow *ui;
@@ -72,6 +72,7 @@ private:
     // ★ 추가: 데이터를 받았을 때 실행할 콜백 함수들
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
     void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+    void send_patrol_goal(double mode); // 중복 제거용 공통 함수
 };
 
 #endif // MAINWINDOW_HPP_

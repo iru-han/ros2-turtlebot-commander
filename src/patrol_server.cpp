@@ -128,11 +128,14 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
     if (goal_handle->is_canceling()) return false;
 
     // ★ 안전 모드 체크: 장애물이 0.3m 이내면 이동 중단 및 에러 처리
-        if (is_safety_mode_ && min_dist_ < 0.3) {
-            RCLCPP_WARN(this->get_logger(), "Obstacle Detected! Stopping Patrol.");
-            auto stop_twist = geometry_msgs::msg::Twist();
-            cmd_vel_pub_->publish(stop_twist);
-            return false; // 장애물 때문에 실패로 리턴
+    if (is_safety_mode_ && min_dist_ < 0.3) {
+            feedback->state = "일시 정지됨: 장애물 감지"; // 이 메시지가 GUI로 전달됨
+            goal_handle->publish_feedback(feedback);
+            
+            twist.linear.x = 0.0;
+            cmd_vel_pub_->publish(twist);
+            loop_rate.sleep();
+            continue; // 장애물이 치워질 때까지 아래 이동 로직을 건너뜀
     }
 
     // double dx = current_odom_.pose.pose.position.x - start_x;
@@ -160,7 +163,7 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
     twist.linear.x = speed;
     cmd_vel_pub_->publish(twist);
 
-    feedback->state = "Dist Error: " + std::to_string(error);
+    feedback->state = "주행 중 (오차: " + std::to_string(error) + "m)";
     goal_handle->publish_feedback(feedback);
 
     loop_rate.sleep();
@@ -175,84 +178,58 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
   return true;
 }
 
+// ★ 각도 정규화 함수 추가 (수학적으로 매우 중요!)
+// -PI ~ PI 사이로 각도를 유지해줍니다.
+double normalize_angle(double angle) {
+    while (angle > M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+}
+
 bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHandlePatrol> goal_handle) {
-  auto feedback = std::make_shared<Patrol::Feedback>();
-  auto twist = geometry_msgs::msg::Twist();
+    auto feedback = std::make_shared<Patrol::Feedback>();
+    auto twist = geometry_msgs::msg::Twist();
 
-  // 목표 각도를 라디안으로 변환 (deg * 3.14 / 180)
-  double target_rad = target_angle_deg * M_PI / 180.0;
+    double target_rad = target_angle_deg * M_PI / 180.0;
+    double start_yaw = get_yaw(current_odom_);
+    double goal_yaw = normalize_angle(start_yaw + target_rad); // 목표 절대 각도
 
-  // 현재 각도 저장 (시작점)
-  double start_yaw = get_yaw(current_odom_);
+    // PID 게인 조정 (물리적 한계 고려)
+    double Kp = 1.2, Ki = 0.005, Kd = 0.5;
+    double prev_error = 0.0, integral_error = 0.0;
+    
+    rclcpp::Rate loop_rate(50);
+    auto start_time = this->now();
 
-  // PID 제어 변수 설정
-  double Kp = 1.5; // P게인: 클수록 빨리 돔
-  double Ki = 0.01; // I게인: 작을수록 미세 오차를 천천히 잡음 (너무 크면 흔들림)
-  double Kd = 1.0; // D게인: 클수록 브레이크를 세게 밟음 (오버슈트 방지)
+    while (rclcpp::ok()) {
+        if (goal_handle->is_canceling()) return false;
 
-  double prev_error = 0.0; // 직전 오차 (D제어용)
-  double integral_error = 0.0; // 누적 오차 (I제어용)
+        double current_yaw = get_yaw(current_odom_);
+        // ★ 수학 포인트: 현재 각도와 목표 각도의 최소 차이 계산
+        double error = normalize_angle(goal_yaw - current_yaw);
 
-  // 50Hz (0.02초마다 제어)
-  rclcpp::Rate loop_rate(50);
-  double dt = 0.02;
+        // 종료 조건 (0.02 rad 약 1.1도 정도로 여유를 줌)
+        if (std::abs(error) < 0.02) break;
 
-  while (rclcpp::ok()) {
-    if (goal_handle->is_canceling()) return false;
+        // 타임아웃 설정 (10초 이상 회전 못하면 멈춤)
+        if ((this->now() - start_time).seconds() > 10.0) return false;
 
-    // 1. 현재 각도 계산
-    double current_yaw = get_yaw(current_odom_);
+        // PID 수식
+        integral_error += error * 0.02;
+        // Integral Windup 방지 (수학적 안전장치)
+        integral_error = std::clamp(integral_error, -0.5, 0.5); 
+        
+        double derivative = (error - prev_error) / 0.02;
+        double output = (Kp * error) + (Ki * integral_error) + (Kd * derivative);
+        prev_error = error;
 
-    // 2. 현재 회전한 양 계산 (현재 - 시작)
-    double rotated_amount = current_yaw - start_yaw;
+        twist.angular.z = std::clamp(output, -1.0, 1.0);
+        cmd_vel_pub_->publish(twist);
 
-    // 각도 보정 (-PI ~ PI 넘어가면 반대편으로 계산되는 문제 해결)
-    if (rotated_amount > M_PI) rotated_amount -= 2.0 * M_PI;
-    else if (rotated_amount < -M_PI) rotated_amount += 2.0 * M_PI;
-
-    // 3. 오차(Error) 계산: 목표값 - 현재값
-    double error = target_rad - rotated_amount;
-
-    // ★ PID 수식 적용 ★
-
-    // P항: 오차에 비례 (멀면 빨리, 가까우면 느리게)
-    double P_term = Kp * error;
-
-    // I항: 오차 누적 (미세하게 안 닿을 때 밀어주기)
-    integral_error += error * dt;
-    double I_term = Ki * integral_error;
-
-    // D항: 오차의 변화율 (기울기, 급격히 가까워지면 브레이크)
-    double derivative = (error - prev_error) / dt;
-    double D_term = Kd * derivative;
-
-    // 최종 출력 (속도) = P + I + D
-    double angular_velocity = P_term + I_term + D_term;
-
-    // 다음 턴을 위해 현재 오차 저장
-    prev_error = error;
-
-    // 4. 안전장치: 너무 빠르면 위험하니까 최대 속도 제한 (Clamp)
-    // std::clamp(값, 최소, 최대)
-    double max_speed = 1.0;
-    angular_velocity = std::clamp(angular_velocity, -max_speed, max_speed);
-
-    // 5. 종료 조건: 오차가 매우 작으면(0.01 rad ≈ 0.5도) 멈춤
-    if (std::abs(error) < 0.01) {
-      break;
+        feedback->state = "회전 중: 오차 " + std::to_string(error);
+        goal_handle->publish_feedback(feedback);
+        loop_rate.sleep();
     }
-
-    // 명령 전송
-    twist.linear.x = 0.0;
-    twist.angular.z = angular_velocity;
-    cmd_vel_pub_->publish(twist);
-
-    // 피드백 전송
-    feedback->state = "PID Error: " + std::to_string(error);
-    goal_handle->publish_feedback(feedback);
-
-    loop_rate.sleep();
-  }
 
   // 완전 정지
   twist.angular.z = 0.0;

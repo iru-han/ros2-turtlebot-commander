@@ -31,7 +31,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget *parent)
     safety_client_ = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
 
     // 8. 화면 안전 업데이트 신호 연결
-    connect(this, &MainWindow::updateUiSignal, this, &MainWindow::updateUiSlot);
+    connect(this, &MainWindow::update_ui_signal, this, &MainWindow::update_ui_slot);
 
     // ★ 서비스 클라이언트 초기화
     safety_client_ = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
@@ -52,7 +52,7 @@ void MainWindow::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     .arg(current_y_, 0, 'f', 2)
     .arg(current_linear_vel_, 0, 'f', 2);
 
-    emit updateUiSignal(current_x_, current_y_, false, status_log);
+    emit update_ui_signal(current_x_, current_y_, false, status_log);
 }
 
 // ★ 5. 장애물 감지 함수 (파이썬 DetectObstacle 기능)
@@ -75,27 +75,42 @@ void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     }
 
     if (min_dist < 0.3) {
-        emit updateUiSignal(0, 0, true, "Obstacle!!");
+        emit update_ui_signal(0, 0, true, "Obstacle!!");
         auto stop_msg = geometry_msgs::msg::Twist();
         pub_cmd_->publish(stop_msg);
+
+
+        emit update_ui_signal(0, 0, true, "Too Close! Backing up...");
+        auto escape_msg = geometry_msgs::msg::Twist();
+        escape_msg.linear.x = -0.1; // 살짝 후진
+        pub_cmd_->publish(escape_msg);
     } else {
-        emit updateUiSignal(0, 0, false, "");
+        emit update_ui_signal(0, 0, false, "");
     }
 }
 
 // UI 업데이트 함수들
-void MainWindow::updateUiSlot(double x, double y, bool warning, QString log) {
+void MainWindow::update_ui_slot(double x, double y, bool warning, QString log) {
     if (warning) {
-        updateWarningUI(true);
-        if (!log.isEmpty()) ui->listWidget->addItem(log);
+        update_warning_ui(true);
+        if (!log.isEmpty()) {
+            ui->listWidget->addItem(log);
+
+            if (ui->listWidget->count() > 100) {
+                delete ui->listWidget->takeItem(0); // 가장 오래된(맨 위) 아이템 삭제
+            }
+
+            // ★ 로그가 추가된 후 자동으로 가장 아래로 스크롤
+            ui->listWidget->scrollToBottom();
+        }
     } else {
         if (ui->label_pos_x) ui->label_pos_x->setText(QString::number(x, 'f', 2));
         if (ui->label_pos_y) ui->label_pos_y->setText(QString::number(y, 'f', 2));
-        updateWarningUI(false);
+        update_warning_ui(false);
     }
 }
 
-void MainWindow::updateWarningUI(bool is_danger) {
+void MainWindow::update_warning_ui(bool is_danger) {
     if (is_danger) {
         ui->label_warning->setText("충돌 위험!");
         ui->label_warning->setStyleSheet("QLabel { color : red; font-weight: bold; }");
@@ -126,10 +141,10 @@ void MainWindow::on_btn_safety_toggle_clicked() {
                     
                     // UI 업데이트는 반드시 Signal을 통해서!
                     QString msg = QString::fromStdString(response->message);
-                    emit updateUiSignal(0, 0, false, "GUI Safety: " + msg);
+                    emit update_ui_signal(0, 0, false, "GUI Safety: " + msg);
                 }
             } catch (const std::exception & e) {
-                emit updateUiSignal(0, 0, false, "Service Failed!");
+                emit update_ui_signal(0, 0, false, "Service Failed!");
             }
         });
 }
@@ -160,69 +175,39 @@ void MainWindow::on_btn_stop_clicked() {
     pub_cmd_->publish(msg);
 }
 
-void MainWindow::on_btn_patrol_square_clicked() {
+void MainWindow::on_btn_patrol_square_clicked() { send_patrol_goal(1.0); }
+void MainWindow::on_btn_patrol_triangle_clicked() { send_patrol_goal(2.0); }
+
+// ★ 중복을 제거한 통합 액션 전송 함수
+void MainWindow::send_patrol_goal(double mode) {
     auto goal_msg = Patrol::Goal();
-    goal_msg.goal.x = 1.0;
+    goal_msg.goal.x = mode;
     goal_msg.goal.y = 1.0;
     goal_msg.goal.z = 1.0;
 
     auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
 
-    // ★ 결과 콜백 추가
+    // 1. 피드백 콜백: 서버가 보내는 "일시 정지" 또는 "주행 중" 메시지 표시
+    opts.feedback_callback = [this](
+        rclcpp_action::ClientGoalHandle<Patrol>::SharedPtr,
+        const std::shared_ptr<const Patrol::Feedback> feedback) 
+    {
+        QString log = QString::fromStdString(feedback->state);
+        emit update_ui_signal(0, 0, false, log);
+    };
+
+    // 2. 결과 콜백: 최종 성공/실패 메시지 표시
     opts.result_callback = [this](const rclcpp_action::ClientGoalHandle<Patrol>::WrappedResult & result) {
         QString final_msg;
         switch (result.code) {
-            case rclcpp_action::ResultCode::SUCCEEDED:
-                final_msg = "Patrol Success!";
-                break;
-            case rclcpp_action::ResultCode::ABORTED:
-                final_msg = "Patrol Aborted (Obstacle?)";
-                break;
-            case rclcpp_action::ResultCode::CANCELED:
-                final_msg = "Patrol Canceled";
-                break;
-            default:
-                final_msg = "Unknown Result";
-                break;
+            case rclcpp_action::ResultCode::SUCCEEDED: final_msg = "Patrol Success!"; break;
+            case rclcpp_action::ResultCode::ABORTED:   final_msg = "Patrol Aborted!"; break;
+            case rclcpp_action::ResultCode::CANCELED:  final_msg = "Patrol Canceled!"; break;
+            default:                                  final_msg = "Unknown Error"; break;
         }
-        // UI에 결과 출력
-        emit updateUiSignal(0, 0, false, final_msg);
-    };
-
-
-    action_client_->async_send_goal(goal_msg, opts);
-    ui->listWidget->addItem("Square Patrol sended!");
-}
-
-void MainWindow::on_btn_patrol_triangle_clicked() {
-    auto goal_msg = Patrol::Goal();
-    goal_msg.goal.x = 2.0;
-    goal_msg.goal.y = 1.0;
-    goal_msg.goal.z = 1.0;
-
-    auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
-
-    // ★ 결과 콜백 추가
-    opts.result_callback = [this](const rclcpp_action::ClientGoalHandle<Patrol>::WrappedResult & result) {
-        QString final_msg;
-        switch (result.code) {
-            case rclcpp_action::ResultCode::SUCCEEDED:
-                final_msg = "Patrol Success!";
-                break;
-            case rclcpp_action::ResultCode::ABORTED:
-                final_msg = "Patrol Aborted (Obstacle?)";
-                break;
-            case rclcpp_action::ResultCode::CANCELED:
-                final_msg = "Patrol Canceled";
-                break;
-            default:
-                final_msg = "Unknown Result";
-                break;
-        }
-        // UI에 결과 출력
-        emit updateUiSignal(0, 0, false, final_msg);
+        emit update_ui_signal(0, 0, false, final_msg);
     };
 
     action_client_->async_send_goal(goal_msg, opts);
-    ui->listWidget->addItem("Triangle Patrol sended!");
+    ui->listWidget->addItem(mode == 1.0 ? "Square Patrol Start!" : "Triangle Patrol Start!");
 }
