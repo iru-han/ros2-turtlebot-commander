@@ -112,6 +112,8 @@ void MainWindow::updateWarningUI(bool is_danger) {
 
 // 버튼 클릭 이벤트 함수 (예: ui->btn_safety)
 void MainWindow::on_btn_safety_clicked() {
+    using ServiceResponseFuture = rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture;
+
     // 1. 서비스 클라이언트 생성
     auto client = node_->create_client<std_srvs::srv::SetBool>("toggle_safety");
 

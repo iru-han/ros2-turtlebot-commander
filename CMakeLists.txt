@@ -16,6 +16,7 @@ find_package(nav_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(Qt5 COMPONENTS Widgets REQUIRED)
 find_package(turtlebot3_msgs REQUIRED) # patrol
+find_package(std_srvs REQUIRED)
 
 # Qt5 자동 변환 세팅
 set(CMAKE_AUTOMOC ON)

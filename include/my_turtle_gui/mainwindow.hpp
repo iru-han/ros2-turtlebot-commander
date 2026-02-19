@@ -10,6 +10,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "turtlebot3_msgs/action/patrol.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -37,6 +38,7 @@ private slots:
     void on_btn_stop_clicked();
     void on_btn_patrol_square_clicked();
     void on_btn_patrol_triangle_clicked();
+    void on_btn_safety_clicked();
 
     void updateUiSlot(double x, double y, bool warning, QString log);
 
