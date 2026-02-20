@@ -43,7 +43,7 @@ class Ui_MainWindow(object):
         self.btn_stop.setGeometry(QRect(90, 140, 71, 41))
         self.listWidget = QListWidget(self.centralwidget)
         self.listWidget.setObjectName(u"listWidget")
-        self.listWidget.setGeometry(QRect(250, 60, 256, 192))
+        self.listWidget.setGeometry(QRect(250, 60, 256, 192)
         self.label_pos_x = QLabel(self.centralwidget)
         self.label_pos_x.setObjectName(u"label_pos_x")
         self.label_pos_x.setGeometry(QRect(30, 280, 67, 17))

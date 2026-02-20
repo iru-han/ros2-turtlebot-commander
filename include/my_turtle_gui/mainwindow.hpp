@@ -16,6 +16,9 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
+// ★ 추가: Patrol이라는 이름을 편하게 쓰기 위해 별칭 선언
+using Patrol = turtlebot3_msgs::action::Patrol;
+
 // =====================================
 // 메인 윈도우
 // =====================================
@@ -29,7 +32,7 @@ public:
 signals:
     void update_ui_signal(double x, double y, bool warning, QString log);
 
-private slots:update_ui_signal
+private slots:
     // 버튼 클릭 슬롯들
     void on_btn_go_clicked();
     void on_btn_back_clicked();
@@ -58,6 +61,8 @@ private:
     // 클라이언트를 멤버 변수로 선언하여 생명 주기 관리
     rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr safety_client_;
 
+    rclcpp_action::ClientGoalHandle<Patrol>::SharedPtr patrol_goal_handle_;
+
     // 현재 로봇 상태 저장 변수
     double current_x_ = 0.0;
     double current_y_ = 0.0;
@@ -66,7 +71,6 @@ private:
     bool is_safety_on_ = true;
 
     // action client
-    using Patrol = turtlebot3_msgs::action::Patrol;
     rclcpp_action::Client<Patrol>::SharedPtr action_client_;
 
     // ★ 추가: 데이터를 받았을 때 실행할 콜백 함수들

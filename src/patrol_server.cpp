@@ -61,9 +61,9 @@ void PatrolServer::handle_safety_toggle(
   is_safety_mode_ = !is_safety_mode_;
 
   response->success = true;
-  response->message = is_safety_mode_ ? "Safety Mode ON" : "Safety Mode OFF";
+  response->message = is_safety_mode_ ? "안전 모드 ON" : "안전 모드 OFF";
 
-  RCLCPP_INFO(this->get_logger(), "Status Changed: %s", response->message.c_str());
+  RCLCPP_INFO(this->get_logger(), "상태 변경: %s", response->message.c_str());
 }
 
 // 1. 클라이언트가 목표를 보냈을 때 (Accept/Reject 결정)
@@ -131,7 +131,7 @@ bool PatrolServer::move_straight(double target_distance, const std::shared_ptr<G
     if (is_safety_mode_ && min_dist_ < 0.3) {
             feedback->state = "일시 정지됨: 장애물 감지"; // 이 메시지가 GUI로 전달됨
             goal_handle->publish_feedback(feedback);
-            
+
             twist.linear.x = 0.0;
             cmd_vel_pub_->publish(twist);
             loop_rate.sleep();
@@ -197,7 +197,7 @@ bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHan
     // PID 게인 조정 (물리적 한계 고려)
     double Kp = 1.2, Ki = 0.005, Kd = 0.5;
     double prev_error = 0.0, integral_error = 0.0;
-    
+
     rclcpp::Rate loop_rate(50);
     auto start_time = this->now();
 
@@ -217,8 +217,8 @@ bool PatrolServer::rotate(double target_angle_deg, const std::shared_ptr<GoalHan
         // PID 수식
         integral_error += error * 0.02;
         // Integral Windup 방지 (수학적 안전장치)
-        integral_error = std::clamp(integral_error, -0.5, 0.5); 
-        
+        integral_error = std::clamp(integral_error, -0.5, 0.5);
+
         double derivative = (error - prev_error) / 0.02;
         double output = (Kp * error) + (Ki * integral_error) + (Kd * derivative);
         prev_error = error;
@@ -263,7 +263,7 @@ void PatrolServer::execute(const std::shared_ptr<GoalHandlePatrol> goal_handle) 
             }
             return; // 함수 종료
         }
-        
+
         if (!rotate(angle, goal_handle)) {
             if (goal_handle->is_canceling()) {
                 result->result = false;

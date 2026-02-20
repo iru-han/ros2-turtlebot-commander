@@ -64,6 +64,7 @@ void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     float min_dist = 100.0;
     int scan_size = msg->ranges.size();
 
+    // 전방 범위 스캔
     for (int i=0; i<30; ++i) {
         float r = msg->ranges[i];
         if (r > 0.01 && r < min_dist) min_dist = r;
@@ -74,36 +75,45 @@ void MainWindow::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         if (r > 0.01 && r < min_dist) min_dist = r;
     }
 
-    if (min_dist < 0.3) {
-        emit update_ui_signal(0, 0, true, "Obstacle!!");
-        auto stop_msg = geometry_msgs::msg::Twist();
-        pub_cmd_->publish(stop_msg);
-
-
-        emit update_ui_signal(0, 0, true, "Too Close! Backing up...");
-        auto escape_msg = geometry_msgs::msg::Twist();
-        escape_msg.linear.x = -0.1; // 살짝 후진
-        pub_cmd_->publish(escape_msg);
-    } else {
-        emit update_ui_signal(0, 0, false, "");
+    if (min_dist <= 0.2) {
+        // [1단계] 너무 가까움 -> 무조건 후진
+        auto twist_msg = geometry_msgs::msg::Twist();
+        twist_msg.linear.x = -0.1;
+        pub_cmd_->publish(twist_msg);
+        emit update_ui_signal(current_x_, current_y_, true, "위험! 후진 중.");
+    }
+    else if (min_dist > 0.2 && min_dist <= 0.32) {
+        // [2단계] 경고 구간 -> "전진 중일 때만" 멈추게 함
+        // current_linear_vel_이 0보다 크다는 건 앞으로 가려 한다는 뜻입니다.
+        if (current_linear_vel_ > 0.01) {
+            auto twist_msg = geometry_msgs::msg::Twist();
+            twist_msg.linear.x = 0.0; // 정지!
+            pub_cmd_->publish(twist_msg);
+            emit update_ui_signal(current_x_, current_y_, true, "경고! 장애물 앞 정지");
+        } else {
+            // 앞으로 가는 중이 아니라면(회전 등) 경고만 띄우고 명령은 방해하지 않음
+            emit update_ui_signal(current_x_, current_y_, true, "(주의) 장애물 근처");
+        }
+    }
+    else {
+        // [3단계] 안전
+        emit update_ui_signal(current_x_, current_y_, false, "안전 거리 확보");
     }
 }
 
 // UI 업데이트 함수들
+// mainwindow.cpp 파일 수정
 void MainWindow::update_ui_slot(double x, double y, bool warning, QString log) {
     if (warning) {
+        // 경고(위험) 상태일 때 로그 추가
         update_warning_ui(true);
         if (!log.isEmpty()) {
             ui->listWidget->addItem(log);
-
-            if (ui->listWidget->count() > 100) {
-                delete ui->listWidget->takeItem(0); // 가장 오래된(맨 위) 아이템 삭제
-            }
-
-            // ★ 로그가 추가된 후 자동으로 가장 아래로 스크롤
+            if (ui->listWidget->count() > 100) delete ui->listWidget->takeItem(0);
             ui->listWidget->scrollToBottom();
         }
     } else {
+        // 일반 상태(순찰 피드백, 시스템 메시지 등)
         if (ui->label_pos_x) ui->label_pos_x->setText(QString::number(x, 'f', 2));
         if (ui->label_pos_y) ui->label_pos_y->setText(QString::number(y, 'f', 2));
         update_warning_ui(false);
@@ -123,30 +133,27 @@ void MainWindow::update_warning_ui(bool is_danger) {
 // 버튼 클릭 이벤트 함수 (예: ui->btn_safety)
 void MainWindow::on_btn_safety_toggle_clicked() {
     if (!safety_client_->wait_for_service(std::chrono::seconds(1))) {
-        ui->listWidget->addItem("Service Server not found!");
+        ui->listWidget->addItem("서비스 서버를 찾을 수 없습니다!");
         return;
     }
 
     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
     request->data = true; // 서버에서 토글하므로 값은 상관없음
 
-    // 비동기 요청
-    safety_client_->async_send_request(request, 
-        [this](rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture future) {
-            try {
-                auto response = future.get();
-                if (response->success) {
-                    // 서버 응답 메시지에 따라 GUI의 안전 모드 변수도 업데이트
-                    this->is_safety_on_ = response->message.find("ON") != std::string::npos;
-                    
-                    // UI 업데이트는 반드시 Signal을 통해서!
-                    QString msg = QString::fromStdString(response->message);
-                    emit update_ui_signal(0, 0, false, "GUI Safety: " + msg);
-                }
-            } catch (const std::exception & e) {
-                emit update_ui_signal(0, 0, false, "Service Failed!");
-            }
-        });
+    // 비동기 요청 및 콜백 처리
+    auto response_received_callback = [this](rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture future) {
+        auto response = future.get();
+        if (response->success) {
+            // ★ 서버가 보낸 한글 메시지에 "ON"이 포함되어 있는지 확인하여 GUI 상태 동기화
+            // std::string의 find를 사용합니다.
+            this->is_safety_on_ = (response->message.find("ON") != std::string::npos);
+
+            // ★ UI 시그널을 통해 한글 메시지를 listWidget에 출력합니다.
+            QString msg = QString::fromStdString(response->message);
+            ui->listWidget->addItem(msg);
+        }
+    };
+    safety_client_->async_send_request(request, response_received_callback);
 }
 
 // 버튼 클릭 동작 정의
@@ -171,8 +178,28 @@ void MainWindow::on_btn_right_clicked() {
     pub_cmd_->publish(msg);
 }
 void MainWindow::on_btn_stop_clicked() {
+    bool is_patrol = false;
+
+    // 1. 진행 중인 액션 목표 취소
+    if (this->patrol_goal_handle_) {
+        this->action_client_->async_cancel_goal(this->patrol_goal_handle_);
+        this->patrol_goal_handle_ = nullptr; // 핸들 초기화
+
+        is_patrol = true;
+    }
+
+    // 2. 로봇을 물리적으로 멈추기 위해 속도 0 전송
     auto msg = geometry_msgs::msg::Twist();
+    msg.linear.x = 0.0;
+    msg.angular.z = 0.0;
     pub_cmd_->publish(msg);
+
+    if (is_patrol) {
+        ui->listWidget->addItem("순찰 중지");
+        ui->listWidget->scrollToBottom();
+    }
+
+    RCLCPP_INFO(node_->get_logger(), "Stop Button Clicked");
 }
 
 void MainWindow::on_btn_patrol_square_clicked() { send_patrol_goal(1.0); }
@@ -188,26 +215,25 @@ void MainWindow::send_patrol_goal(double mode) {
     auto opts = rclcpp_action::Client<Patrol>::SendGoalOptions();
 
     // 1. 피드백 콜백: 서버가 보내는 "일시 정지" 또는 "주행 중" 메시지 표시
-    opts.feedback_callback = [this](
-        rclcpp_action::ClientGoalHandle<Patrol>::SharedPtr,
-        const std::shared_ptr<const Patrol::Feedback> feedback) 
-    {
-        QString log = QString::fromStdString(feedback->state);
-        emit update_ui_signal(0, 0, false, log);
+    // ★ 추가: 서버가 목표를 수락하면 이 핸들을 변수에 저장함
+    opts.goal_response_callback = [this](rclcpp_action::ClientGoalHandle<Patrol>::SharedPtr handle) {
+        if (!handle) {
+            RCLCPP_ERROR(node_->get_logger(), "Goal was rejected by server");
+        } else {
+            this->patrol_goal_handle_ = handle; // 여기서 저장해야 나중에 Stop 버튼이 취소할 수 있음!
+        }
     };
 
     // 2. 결과 콜백: 최종 성공/실패 메시지 표시
-    opts.result_callback = [this](const rclcpp_action::ClientGoalHandle<Patrol>::WrappedResult & result) {
-        QString final_msg;
-        switch (result.code) {
-            case rclcpp_action::ResultCode::SUCCEEDED: final_msg = "Patrol Success!"; break;
-            case rclcpp_action::ResultCode::ABORTED:   final_msg = "Patrol Aborted!"; break;
-            case rclcpp_action::ResultCode::CANCELED:  final_msg = "Patrol Canceled!"; break;
-            default:                                  final_msg = "Unknown Error"; break;
-        }
-        emit update_ui_signal(0, 0, false, final_msg);
+    opts.feedback_callback = [this](
+        rclcpp_action::ClientGoalHandle<Patrol>::SharedPtr,
+        const std::shared_ptr<const Patrol::Feedback> feedback)
+    {
+        QString log = QString::fromStdString(feedback->state);
+        // [수정] 좌표 깜빡임 방지: 0 대신 현재 멤버 변수 값 전달
+        emit update_ui_signal(current_x_, current_y_, false, log);
     };
 
     action_client_->async_send_goal(goal_msg, opts);
-    ui->listWidget->addItem(mode == 1.0 ? "Square Patrol Start!" : "Triangle Patrol Start!");
+    ui->listWidget->addItem(mode == 1.0 ? "사각형 순찰 시작!" : "삼각형 순찰 시작!");
 }
