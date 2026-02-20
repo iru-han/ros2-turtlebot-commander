@@ -1,7 +1,6 @@
 # [기능 명세서] 터틀봇3 GUI 제어 및 순찰 시스템
-
 | 요구사항 명 | 주 기능 | 우선순위 | 필요 기술 | FE / BE | 인터페이스(API) 명세 | 비고 |
-|------------|------------|--------|----------|-----------|---------|----------------------|------|
+|------------|---------|----------|-----------|---------|----------------------|------|
 | 수동 주행 제어 | GUI 방향 버튼을 통한 로봇 실시간 원격 제어 (전/후/좌/우/정지) | 상 | Qt5, rclcpp | GUI | PUB /cmd_vel Type: geometry_msgs/Twist | 정지 시 모든 액션 취소 로직 포함 |
 | 위치 모니터링 | 오도메트리 데이터를 수신하여 로봇의 현재 좌표(X, Y) 실시간 표시 | 상 | Odometry, Qt5 | GUI | SUB /odom Type: nav_msgs/Odometry | 쿼터니언 → 오일러(Yaw) 변환 적용 |
 | 장애물 감지 및 대응 | LiDAR 데이터를 분석하여 전방 장애물 거리 측정 및 위험 시 자동 후진/정지 | 상 | LaserScan, rclcpp | Server | SUB /scan Type: sensor_msgs/LaserScan | 감지 범위: 전방 60도, 임계치: 0.2m ~ 0.32m |
@@ -132,6 +131,7 @@ my_turtle_gui/
 ```
 
 ## 6. 실행 방법
+```plaintext
 # 워크스페이스 이동
 cd ~/robot_ws
 
@@ -149,3 +149,4 @@ ros2 launch turtlebot3_gazebo turtlebot3_empty_world.launch.py
 
 # GUI 및 패트롤 서버 통합 노드 실행
 ros2 run my_turtle_gui my_gui_node
+```
