@@ -33,7 +33,7 @@ public:
 private:
     // Action Server 콜백 함수
     // 1. 클라이언트의 목표(Goal) 요청을 수락할지 결정
-    rclcpp_action::GoalResponse handle_goal(const rclcpp_action::Goal_UUID & uuid, std::shared_ptr<const Patrol::Goal> goal);
+    rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Patrol::Goal> goal);
     // 2. 클라이언트의 취소 요청 처리
     rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandlePatrol> goal_handle);
     // 3. 목표 수락 후 실제 실행 스레드 시작
