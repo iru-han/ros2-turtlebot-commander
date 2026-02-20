@@ -85,9 +85,6 @@ private:
     double current_linear_vel_ = 0.0;  // 로봇의 현재 속도
     bool is_safety_on_ = true;         // 현재 안전 모드가 활성화되어 있는지 여부
 
-    // action client
-    rclcpp_action::Client<Patrol>::SharedPtr action_client_;
-
     // 데이터가 도착했을 때 자동으로 호출되는 콜백 함수들
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
     void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
