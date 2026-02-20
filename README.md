@@ -45,10 +45,6 @@
 - **QoS (Quality of Service) 최적화**: 레이저 데이터는 SensorDataQoS를 적용하여 저지연성을 확보하고, 오돔 데이터는 Reliable 설정을 통해 데이터 무결성을 보장함.
 - **Quaternion to Euler Conversion**: 수신된 쿼터니언 데이터를 아래 수식을 통해 Yaw(각도) 값으로 변환하여 GUI에 표시 및 PID 제어에 활용.
 
-$$
-Yaw = \operatorname{atan2}(2(qw \cdot qz + qx \cdot qy), 1 - 2(qy^2 + qz^2))
-$$
-
 ---
 
 ### 3.2 Service: 동적 안전 제어 시스템
